@@ -1,5 +1,5 @@
-Configuration.md
-module.md
-powershell-foundations.md
-updatingSoftwareMechanism.md
-WorkstationAutomation.md
+logs/
+debug.log
+
+*.md
+!README.md
