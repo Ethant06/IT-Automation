@@ -1,59 +1,360 @@
-# This function checks what software is installed
 function Get-InstalledSoftware {
-  param (
-    [Parameter(Mandatory)]
-    [string]$Name
-  )
+    param (
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
 
-  $registryPaths = @(
-    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-  )
+    $registryPaths = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
 
-  foreach($path in $registryPaths) {
-    Get-ItemProperty $path |
-      Where-Object DisplayName -like "*$Name*"
-  }
+    foreach ($path in $registryPaths) {
+        Get-ItemProperty $path -ErrorAction SilentlyContinue |
+            Where-Object DisplayName -like "*$Name*"
+    }
 }
 
 
-# this function checks if the software version is sufficient enough
-function Compare-SoftwareVersion {
-  param (
-    [Parameter(Mandatory)]
-    [string]$InstalledVersion,
+function Get-SoftwareVersion {
+    param (
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
 
-    [Parameter(Mandatory)]
-    [string]$RequiredVersion
-  )
+    $software = @(Get-InstalledSoftware -Name $Name)
 
-  $installed = [System.Version]$InstalledVersion
-  $required = [System.Version]$RequiredVersion
-  return $installed -ge $required
+    if (-not $software) {
+        return [PSCustomObject]@{
+            Name    = $Name
+            Version = $null
+            Found   = $false
+        }
+    }
+
+    $parsedVersions = foreach ($item in $software) {
+        if (-not $item.DisplayVersion) {
+            continue
+        }
+
+        try {
+            [System.Version]$item.DisplayVersion
+        }
+        catch {
+        }
+    }
+
+    $version = $parsedVersions |
+        Sort-Object -Descending |
+        Select-Object -First 1
+
+    $versionText = if ($version) {
+        $version.ToString()
+    }
+    else {
+        ($software | Where-Object DisplayVersion | Select-Object -First 1).DisplayVersion
+    }
+
+    return [PSCustomObject]@{
+        Name    = $Name
+        Version = $versionText
+        Found   = $true
+    }
 }
 
-function Test-SoftwareUpdated {
-  param (
-    [Parameter(Mandatory)]
-    [string]$Name,
 
-    [Parameter(Mandatory)]
-    [string]$RequiredVersion
-  )
+function Find-GoogleUpdater {
 
-  $software = Get-InstalledSoftware -Name $Name
+    $searchRoot = "C:\Program Files (x86)\Google\GoogleUpdater"
 
-  if (-not $software) {
-    return $false
-  }
+    if (-not (Test-Path $searchRoot)) {
+        return $null
+    }
 
-  $installedVersion = $software.DisplayVersion
-  return Compare-SoftwareVersion `
-    -InstalledVersion $installedVersion `
-    -RequiredVersion $RequiredVersion
+    $updater = Get-ChildItem `
+        $searchRoot `
+        -Recurse `
+        -Filter "updater.exe" `
+        -File `
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if (-not $updater) {
+        return $null
+    }
+
+    return $updater.FullName
 }
 
-Export-ModuleMember -Function Get-InstalledSoftware, Compare-SoftwareVersion, Test-SoftwareUpdated
+
+function Update-Chrome {
+
+    $before = Get-SoftwareVersion -Name "Chrome"
+    $updaterPath = Find-GoogleUpdater
+    $maxAttempts = 3
+
+    if (-not $updaterPath) {
+        return [PSCustomObject]@{
+            Software      = "Chrome"
+            Success       = $false
+            Attempts      = 0
+            BeforeVersion = $before.Version
+            AfterVersion  = $before.Version
+            Message       = "Google Updater was not found."
+        }
+    }
+
+    $currentVersion = $before.Version
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+
+        try {
+            $process = Start-Process `
+                -FilePath $updaterPath `
+                -ArgumentList "--update-apps", "--system" `
+                -Wait `
+                -PassThru `
+                -ErrorAction Stop
+        }
+        catch {
+            return [PSCustomObject]@{
+                Software      = "Chrome"
+                Success       = $false
+                Attempts      = $attempt
+                BeforeVersion = $before.Version
+                AfterVersion  = $currentVersion
+                Message       = "Failed to run Google Updater."
+            }
+        }
+
+        $after = Get-SoftwareVersion -Name "Chrome"
+
+        if ($after.Version -eq $currentVersion) {
+            return [PSCustomObject]@{
+                Software      = "Chrome"
+                Success       = ($process.ExitCode -eq 0)
+                Attempts      = $attempt
+                BeforeVersion = $before.Version
+                AfterVersion  = $after.Version
+                ExitCode      = $process.ExitCode
+                Message       = "Chrome is up to date or no further update was applied."
+            }
+        }
+
+        $currentVersion = $after.Version
+    }
+
+    return [PSCustomObject]@{
+        Software      = "Chrome"
+        Success       = $false
+        Attempts      = $maxAttempts
+        BeforeVersion = $before.Version
+        AfterVersion  = $currentVersion
+        Message       = "Maximum update attempts reached."
+    }
+}
 
 
+function Wait-ScheduledTaskToFinish {
+    param (
+        $Task,
+        [int]$TimeoutSeconds = 180
+    )
 
+    $stopAt = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    do {
+        $current = Get-ScheduledTask `
+            -TaskName $Task.TaskName `
+            -TaskPath $Task.TaskPath `
+            -ErrorAction SilentlyContinue
+
+        if (-not $current -or $current.State -ne 'Running') {
+            return
+        }
+
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $stopAt)
+}
+
+
+function Wait-MozillaUpdaterProcess {
+    param (
+        [int]$TimeoutSeconds = 180
+    )
+
+    $stopAt = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    do {
+        $updaters = Get-Process -Name "updater" -ErrorAction SilentlyContinue
+
+        $mozillaUpdater = $updaters | Where-Object {
+            try {
+                (-not $_.Path) -or
+                ($_.Path -like "*Mozilla*") -or
+                ($_.Path -like "*Firefox*")
+            }
+            catch {
+                $true
+            }
+        }
+
+        if (-not $mozillaUpdater) {
+            return
+        }
+
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $stopAt)
+}
+
+
+function Update-Firefox {
+
+    $before = Get-SoftwareVersion -Name "Firefox"
+    $maxAttempts = 3
+
+    $task = Get-ScheduledTask |
+        Where-Object TaskName -like "*Firefox Background Update*" |
+        Select-Object -First 1
+
+    if (-not $task) {
+        return [PSCustomObject]@{
+            Software      = "Firefox"
+            Success       = $false
+            Attempts      = 0
+            BeforeVersion = $before.Version
+            AfterVersion  = $before.Version
+            Message       = "Firefox Background Update task was not found."
+        }
+    }
+
+    $currentVersion = $before.Version
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+
+        try {
+            Start-ScheduledTask `
+                -TaskName $task.TaskName `
+                -TaskPath $task.TaskPath `
+                -ErrorAction Stop
+        }
+        catch {
+            $state = (
+                Get-ScheduledTask `
+                    -TaskName $task.TaskName `
+                    -TaskPath $task.TaskPath `
+                    -ErrorAction SilentlyContinue
+            ).State
+
+            if ($state -ne 'Running') {
+                return [PSCustomObject]@{
+                    Software      = "Firefox"
+                    Success       = $false
+                    Attempts      = $attempt
+                    BeforeVersion = $before.Version
+                    AfterVersion  = $currentVersion
+                    Message       = "Failed to start Firefox Background Update task."
+                }
+            }
+        }
+
+        Wait-ScheduledTaskToFinish -Task $task
+        Wait-MozillaUpdaterProcess
+        Start-Sleep -Seconds 3
+
+        $after = Get-SoftwareVersion -Name "Firefox"
+
+        if ($after.Version -eq $currentVersion) {
+            $firefoxRunning = Get-Process -Name "firefox" -ErrorAction SilentlyContinue
+
+            $message = "Firefox is up to date or no further update was applied."
+            if ($firefoxRunning) {
+                $message = "Firefox version did not change. Close Firefox if an update is pending."
+            }
+
+            return [PSCustomObject]@{
+                Software      = "Firefox"
+                Success       = -not [bool]$firefoxRunning
+                Attempts      = $attempt
+                BeforeVersion = $before.Version
+                AfterVersion  = $after.Version
+                Message       = $message
+            }
+        }
+
+        $currentVersion = $after.Version
+    }
+
+    return [PSCustomObject]@{
+        Software      = "Firefox"
+        Success       = $false
+        Attempts      = $maxAttempts
+        BeforeVersion = $before.Version
+        AfterVersion  = $currentVersion
+        Message       = "Maximum update attempts reached."
+    }
+}
+
+
+function Update-Software {
+    param (
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    switch ($Name) {
+
+        "Chrome" {
+            return Update-Chrome
+        }
+
+        "Firefox" {
+            return Update-Firefox
+        }
+
+        default {
+            return [PSCustomObject]@{
+                Software = $Name
+                Success  = $false
+                Message  = "No updater is configured for this software."
+            }
+        }
+    }
+}
+
+
+function Update-AllSoftware {
+    param (
+        [string]$ConfigPath
+    )
+
+    if (-not $ConfigPath) {
+        $ConfigPath = Join-Path $PSScriptRoot '..\config\software-requirements.psd1'
+    }
+
+    if (-not (Test-Path $ConfigPath)) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = "Configuration file was not found: $ConfigPath"
+        }
+    }
+
+    $requirements = Import-PowerShellDataFile $ConfigPath
+
+    foreach ($software in $requirements.Software) {
+
+        if ($software.Update) {
+            Update-Software -Name $software.Name
+        }
+    }
+}
+
+
+Export-ModuleMember -Function `
+Get-InstalledSoftware, `
+Get-SoftwareVersion, `
+Find-GoogleUpdater, `
+Update-Chrome, `
+Update-Firefox, `
+Update-Software, `
+Update-AllSoftware
