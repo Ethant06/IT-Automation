@@ -1,0 +1,31 @@
+[2026-09-10 19:36:51] [INFO] Toolkit started
+[2026-09-10 19:52:54] [INFO] Starting software updates from C:\Users\Hisen\Documents\Personal Projects\workstation-toolkit\modules\..\config\software-requirements.psd1
+[2026-09-10 19:52:54] [INFO] Updating Chrome
+[2026-09-10 19:52:56] [SUCCESS] Chrome: Chrome is up to date or no further update was applied.
+[2026-09-10 19:52:56] [INFO] Updating Firefox
+[2026-09-10 19:53:10] [SUCCESS] Firefox: Firefox is up to date or no further update was applied.
+[2026-09-10 19:53:10] [INFO] Software updates finished
+[2026-09-10 20:28:35] [INFO] Starting workstation setup
+[2026-09-10 20:28:35] [INFO] Collecting workstation information
+[2026-09-10 20:28:40] [SUCCESS] Workstation: THUNDER | Windows: 2009 | Architecture: 64-bit | Memory: 15.73 GB
+[2026-09-10 20:28:40] [INFO] Starting software updates
+[2026-09-10 20:28:40] [INFO] Starting software updates from C:\Users\Hisen\Documents\Personal Projects\workstation-toolkit\scripts\..\config\software-requirements.psd1
+[2026-09-10 20:28:40] [INFO] Updating Chrome
+[2026-09-10 20:28:42] [SUCCESS] Chrome: Chrome is up to date or no further update was applied.
+[2026-09-10 20:28:42] [INFO] Updating Firefox
+[2026-09-10 20:28:55] [SUCCESS] Firefox: Firefox is up to date or no further update was applied.
+[2026-09-10 20:28:55] [INFO] Software updates finished
+[2026-09-10 20:28:56] [SUCCESS] Workstation setup completed successfully
+[2026-09-10 21:02:04] [INFO] Starting workstation setup
+[2026-09-10 21:02:04] [INFO] Collecting workstation information
+[2026-09-10 21:02:09] [SUCCESS] Workstation: THUNDER | Windows: 2009 | Architecture: 64-bit | Memory: 15.73 GB
+[2026-09-10 21:02:09] [INFO] Starting software updates
+[2026-09-10 21:02:09] [INFO] Starting software updates from C:\Users\Hisen\Documents\Personal Projects\workstation-toolkit\scripts\..\config\software-requirements.psd1
+[2026-09-10 21:02:09] [INFO] Updating Chrome
+[2026-09-10 21:02:09] [INFO] Chrome is running. Closing it before update.
+[2026-09-10 21:02:15] [INFO] Launching Chrome to verify version 153.0.8010.37
+[2026-09-10 21:02:16] [SUCCESS] Chrome: Chrome is ready. Running version 153.0.8010.37.
+[2026-09-10 21:02:16] [INFO] Updating Firefox
+[2026-09-10 21:02:29] [SUCCESS] Firefox: Firefox is up to date or no further update was applied.
+[2026-09-10 21:02:29] [INFO] Software updates finished
+[2026-09-10 21:02:29] [SUCCESS] Workstation setup completed successfully
