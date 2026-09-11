@@ -1,3 +1,7 @@
+if (-not (Get-Command Write-Log -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'Logging.psm1')
+}
+
 function Get-InstalledSoftware {
     param (
         [Parameter(Mandatory)]
@@ -87,11 +91,123 @@ function Find-GoogleUpdater {
 }
 
 
+function Find-ChromeExe {
+
+    $candidates = @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
+    )
+
+    foreach ($path in $candidates) {
+        if (Test-Path $path) {
+            return $path
+        }
+    }
+
+    $installed = Get-InstalledSoftware -Name "Chrome" | Select-Object -First 1
+
+    if ($installed.InstallLocation) {
+        $exePath = Join-Path $installed.InstallLocation "chrome.exe"
+        if (Test-Path $exePath) {
+            return $exePath
+        }
+    }
+
+    return $null
+}
+
+
+function Test-ChromeRunning {
+    return [bool](Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+}
+
+
+function Close-ChromeGracefully {
+    param (
+        [int]$TimeoutSeconds = 30
+    )
+
+    $processes = @(Get-Process -Name "chrome" -ErrorAction SilentlyContinue)
+
+    if (-not $processes) {
+        return $true
+    }
+
+    foreach ($process in $processes) {
+        try {
+            $process.CloseMainWindow() | Out-Null
+        }
+        catch {
+        }
+    }
+
+    $stopAt = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    do {
+        Start-Sleep -Seconds 1
+
+        if (-not (Get-Process -Name "chrome" -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+    } while ((Get-Date) -lt $stopAt)
+
+    return $false
+}
+
+
+function Get-ChromeFileVersion {
+    param (
+        [string]$ChromePath
+    )
+
+    if (-not $ChromePath -or -not (Test-Path $ChromePath)) {
+        return $null
+    }
+
+    return (Get-Item $ChromePath).VersionInfo.ProductVersion
+}
+
+
+function Start-ChromeAndGetVersion {
+    param (
+        [Parameter(Mandatory)]
+        [string]$ChromePath,
+
+        [int]$TimeoutSeconds = 30
+    )
+
+    Start-Process -FilePath $ChromePath
+
+    $stopAt = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    do {
+        Start-Sleep -Seconds 1
+
+        $running = Get-Process -Name "chrome" -ErrorAction SilentlyContinue |
+            Where-Object Path |
+            Select-Object -First 1
+
+        if ($running) {
+            try {
+                return (Get-Item $running.Path).VersionInfo.ProductVersion
+            }
+            catch {
+                return Get-ChromeFileVersion -ChromePath $ChromePath
+            }
+        }
+    } while ((Get-Date) -lt $stopAt)
+
+    return $null
+}
+
+
 function Update-Chrome {
 
     $before = Get-SoftwareVersion -Name "Chrome"
     $updaterPath = Find-GoogleUpdater
+    $chromePath = Find-ChromeExe
     $maxAttempts = 3
+    $chromeWasRunning = Test-ChromeRunning
 
     if (-not $updaterPath) {
         return [PSCustomObject]@{
@@ -104,7 +220,34 @@ function Update-Chrome {
         }
     }
 
+    if (-not $chromePath) {
+        return [PSCustomObject]@{
+            Software      = "Chrome"
+            Success       = $false
+            Attempts      = 0
+            BeforeVersion = $before.Version
+            AfterVersion  = $before.Version
+            Message       = "chrome.exe was not found."
+        }
+    }
+
+    if ($chromeWasRunning) {
+        Write-Log -Message "Chrome is running. Closing it before update." -Level INFO
+
+        if (-not (Close-ChromeGracefully)) {
+            return [PSCustomObject]@{
+                Software      = "Chrome"
+                Success       = $false
+                Attempts      = 0
+                BeforeVersion = $before.Version
+                AfterVersion  = $before.Version
+                Message       = "Chrome refused to close. Update was not started."
+            }
+        }
+    }
+
     $currentVersion = $before.Version
+    $exitCode = $null
 
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
 
@@ -115,6 +258,8 @@ function Update-Chrome {
                 -Wait `
                 -PassThru `
                 -ErrorAction Stop
+
+            $exitCode = $process.ExitCode
         }
         catch {
             return [PSCustomObject]@{
@@ -130,27 +275,55 @@ function Update-Chrome {
         $after = Get-SoftwareVersion -Name "Chrome"
 
         if ($after.Version -eq $currentVersion) {
-            return [PSCustomObject]@{
-                Software      = "Chrome"
-                Success       = ($process.ExitCode -eq 0)
-                Attempts      = $attempt
-                BeforeVersion = $before.Version
-                AfterVersion  = $after.Version
-                ExitCode      = $process.ExitCode
-                Message       = "Chrome is up to date or no further update was applied."
-            }
+            break
         }
 
         $currentVersion = $after.Version
     }
 
+    $installedVersion = (Get-SoftwareVersion -Name "Chrome").Version
+
+    Write-Log -Message "Launching Chrome to verify version $installedVersion" -Level INFO
+
+    $runningVersion = Start-ChromeAndGetVersion -ChromePath $chromePath
+    $fileVersion = Get-ChromeFileVersion -ChromePath $chromePath
+
+    if (-not $runningVersion) {
+        return [PSCustomObject]@{
+            Software      = "Chrome"
+            Success       = $false
+            Attempts      = $attempt
+            BeforeVersion = $before.Version
+            AfterVersion  = $installedVersion
+            ExitCode      = $exitCode
+            Message       = "Chrome update finished but Chrome did not launch."
+        }
+    }
+
+    $versionsMatch = ($runningVersion -eq $installedVersion) -or ($runningVersion -eq $fileVersion)
+
+    if (-not $versionsMatch) {
+        return [PSCustomObject]@{
+            Software      = "Chrome"
+            Success       = $false
+            Attempts      = $attempt
+            BeforeVersion = $before.Version
+            AfterVersion  = $installedVersion
+            RunningVersion = $runningVersion
+            ExitCode      = $exitCode
+            Message       = "Chrome launched, but running version $runningVersion does not match installed version $installedVersion."
+        }
+    }
+
     return [PSCustomObject]@{
-        Software      = "Chrome"
-        Success       = $false
-        Attempts      = $maxAttempts
-        BeforeVersion = $before.Version
-        AfterVersion  = $currentVersion
-        Message       = "Maximum update attempts reached."
+        Software       = "Chrome"
+        Success        = ($exitCode -eq 0)
+        Attempts       = $attempt
+        BeforeVersion  = $before.Version
+        AfterVersion   = $installedVersion
+        RunningVersion = $runningVersion
+        ExitCode       = $exitCode
+        Message        = "Chrome is ready. Running version $runningVersion."
     }
 }
 
@@ -333,20 +506,36 @@ function Update-AllSoftware {
     }
 
     if (-not (Test-Path $ConfigPath)) {
+        Write-Log -Message "Configuration file was not found: $ConfigPath" -Level ERROR
         return [PSCustomObject]@{
             Success = $false
             Message = "Configuration file was not found: $ConfigPath"
         }
     }
 
+    Write-Log -Message "Starting software updates from $ConfigPath" -Level INFO
+
     $requirements = Import-PowerShellDataFile $ConfigPath
 
     foreach ($software in $requirements.Software) {
 
         if ($software.Update) {
-            Update-Software -Name $software.Name
+            Write-Log -Message "Updating $($software.Name)" -Level INFO
+
+            $result = Update-Software -Name $software.Name
+
+            if ($result.Success) {
+                Write-Log -Message "$($software.Name): $($result.Message)" -Level SUCCESS
+            }
+            else {
+                Write-Log -Message "$($software.Name): $($result.Message)" -Level ERROR
+            }
+
+            $result
         }
     }
+
+    Write-Log -Message "Software updates finished" -Level INFO
 }
 
 
